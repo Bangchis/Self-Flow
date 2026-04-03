@@ -251,6 +251,15 @@ class SelfFlowDiT(nn.Module):
         pos_embed = get_2d_sincos_pos_embed(self.hidden_size, self.grid_size)
         self.pos_embed_val = pos_embed[None, ...] # (1, num_patches, hidden_size)
         self.feature_head = SimpleHead(in_dim=self.hidden_size, out_dim=self.hidden_size)
+        # Preserve the historical parameter subtree name so existing checkpoints
+        # continue to load while letting auxiliary readouts reuse the same head.
+        self.final_layer = FinalLayer(
+            hidden_size=self.hidden_size,
+            patch_size=self.patch_size,
+            out_channels=self.out_channels_val,
+            per_token=self.per_token,
+            name="FinalLayer_0",
+        )
 
     @nn.compact
     def __call__(
@@ -261,6 +270,7 @@ class SelfFlowDiT(nn.Module):
         x_ids: Optional[jax.Array] = None,
         return_features: bool = False,
         return_raw_features: bool = False,
+        return_conditioning: bool = False,
         return_block_summaries: bool = False,
         deterministic: bool = True,
     ):
@@ -323,28 +333,28 @@ class SelfFlowDiT(nn.Module):
             elif (i + 1) == return_raw_features:
                 zs = x
 
-        x = FinalLayer(
-            hidden_size=self.hidden_size,
-            patch_size=self.patch_size,
-            out_channels=self.out_channels_val,
-            per_token=self.per_token
-        )(x, c)
-
-        x = self._shufflechannel(x)
-        
-        # PyTorch implementation negates the final prediction
-        x = -x
+        x = self.readout_from_hidden(x, c)
 
         if return_block_summaries:
             block_summaries = jnp.stack(block_summaries, axis=0)  # (depth, B, D)
 
+        outputs = [x]
         if return_features or return_raw_features:
-            if return_block_summaries:
-                return x, zs, block_summaries
-            return x, zs
+            outputs.append(zs)
+        if return_conditioning:
+            outputs.append(c)
         if return_block_summaries:
-            return x, block_summaries
-        return x
+            outputs.append(block_summaries)
+        if len(outputs) == 1:
+            return outputs[0]
+        return tuple(outputs)
+
+    def readout_from_hidden(self, x: jax.Array, c: jax.Array) -> jax.Array:
+        """Reuse the existing final velocity head on a provided hidden state."""
+        x = self.final_layer(x, c)
+        x = self._shufflechannel(x)
+        # PyTorch implementation negates the final prediction
+        return -x
 
     def _shufflechannel(self, x):
         """Reorder channels/patches to match expected output format."""

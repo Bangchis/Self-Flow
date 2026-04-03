@@ -390,6 +390,46 @@ def build_model_config(model_size):
     )
 
 
+def resolve_anti_probe_config(args, depth):
+    """Resolve CLI defaults for the optional anti-probe regularizer."""
+    if args.anti_probe_weight < 0:
+        raise ValueError("--anti-probe-weight must be >= 0")
+    if args.anti_probe_delta <= 0:
+        raise ValueError("--anti-probe-delta must be > 0")
+
+    enabled = bool(args.anti_probe)
+    if not enabled:
+        return {
+            "enabled": False,
+            "layer": None,
+            "weight": float(args.anti_probe_weight),
+            "delta": float(args.anti_probe_delta),
+        }
+
+    anti_layer = args.anti_probe_layer
+    model_size = str(args.model_size).upper()
+    if anti_layer is None:
+        if model_size == "B":
+            anti_layer = 5
+        else:
+            raise ValueError(
+                "--anti-probe requires --anti-probe-layer for model sizes other than B"
+            )
+
+    anti_layer = int(anti_layer)
+    if anti_layer < 1 or anti_layer >= int(depth):
+        raise ValueError(
+            f"--anti-probe-layer must be in [1, {int(depth) - 1}] for depth={depth}, got {anti_layer}"
+        )
+
+    return {
+        "enabled": True,
+        "layer": anti_layer,
+        "weight": float(args.anti_probe_weight),
+        "delta": float(args.anti_probe_delta),
+    }
+
+
 # diffusers phải được import TRƯỚC jax để tránh xung đột C++ protobuf descriptor.
 # Nếu diffusers được import sau khi JAX/TPU khởi tạo, dynamic linker dlopen một .so
 # mới đăng ký protobuf descriptor trùng với descriptor của XLA → SIGSEGV.
@@ -500,102 +540,259 @@ def ema_update(ema_params, new_params, decay):
 
 # ── Vanilla SiT training/eval ─────────────────────────────────────────────────
 
-def train_step(
-    state, ema_params, batch, rng, ema_decay,
-):
-    """Vanilla SiT training step (global timestep; velocity prediction).
+def mean_branchless_huber_loss(pred, target, delta):
+    """Elementwise Huber reduction using branchless primitives for TPU-friendly XLA."""
+    abs_err = jnp.abs(pred - target)
+    delta = jnp.asarray(delta, dtype=abs_err.dtype)
+    quad = jnp.minimum(abs_err, delta)
+    lin = abs_err - quad
+    huber = 0.5 * quad * quad + delta * lin
+    return jnp.mean(huber.astype(jnp.float32))
 
-    Repo time convention: tau=0 → pure noise, tau=1 → clean data.
-      x_tau   = (1 - tau) * x1 + tau * x0
-      target  = x0 - x1
-      loss    = E[||v_theta(x_tau, tau) - target||^2]
-    """
-    x0, y = batch  # x0: [local_B, N, D], y: [local_B]
-    local_batch = x0.shape[0]
 
-    rng, tau_rng, noise_rng, drop_rng = jax.random.split(rng, 4)
+def make_train_step_baseline():
+    def train_step(state, ema_params, batch, rng, ema_decay):
+        """Vanilla SiT training step (global timestep; velocity prediction)."""
+        x0, y = batch  # x0: [local_B, N, D], y: [local_B]
+        local_batch = x0.shape[0]
 
-    tau = jax.random.uniform(tau_rng, shape=(local_batch,), minval=0.0, maxval=1.0)  # [B]
-    x1 = jax.random.normal(noise_rng, x0.shape)  # [B, N, D]
+        rng, tau_rng, noise_rng, drop_rng = jax.random.split(rng, 4)
 
-    x_tau = (1.0 - tau[:, None, None]) * x1 + tau[:, None, None] * x0
-    target = x0 - x1
+        tau = jax.random.uniform(tau_rng, shape=(local_batch,), minval=0.0, maxval=1.0)
+        x1 = jax.random.normal(noise_rng, x0.shape)
 
-    def loss_fn(params):
+        x_tau = (1.0 - tau[:, None, None]) * x1 + tau[:, None, None] * x0
+        target = x0 - x1
+
+        def loss_fn(params):
+            pred = state.apply_fn(
+                {"params": params},
+                x_tau,
+                timesteps=tau,
+                vector=y,
+                deterministic=False,
+                rngs={"dropout": drop_rng},
+            )
+            loss_fm = jnp.mean((pred - target) ** 2)
+            zero = jnp.zeros((), dtype=loss_fm.dtype)
+            v_abs_mean = jnp.mean(jnp.abs(target))
+            v_pred_abs_mean = jnp.mean(jnp.abs(pred))
+            return loss_fm, (loss_fm, zero, v_abs_mean, v_pred_abs_mean)
+
+        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+        (loss_total, (loss_fm, loss_anti_probe, v_abs, v_pred)), grads = grad_fn(state.params)
+
+        loss_total = jax.lax.pmean(loss_total, axis_name="batch")
+        loss_fm = jax.lax.pmean(loss_fm, axis_name="batch")
+        loss_anti_probe = jax.lax.pmean(loss_anti_probe, axis_name="batch")
+        v_abs = jax.lax.pmean(v_abs, axis_name="batch")
+        v_pred = jax.lax.pmean(v_pred, axis_name="batch")
+        grads = jax.lax.pmean(grads, axis_name="batch")
+
+        grad_norm = jnp.sqrt(sum(jnp.sum(jnp.square(x)) for x in jax.tree_util.tree_leaves(grads)))
+        param_norm = jnp.sqrt(sum(jnp.sum(jnp.square(x)) for x in jax.tree_util.tree_leaves(state.params)))
+
+        state = state.apply_gradients(grads=grads)
+        ema_params = ema_update(ema_params, state.params, ema_decay)
+
+        metrics = {
+            "train/loss": loss_total,
+            "train/loss_fm": loss_fm,
+            "train/loss_anti_probe": loss_anti_probe,
+            "train/loss_total": loss_total,
+            "train/ema_decay": ema_decay,
+            "train/grad_norm": grad_norm,
+            "train/param_norm": param_norm,
+            "train/v_abs_mean": v_abs,
+            "train/v_pred_abs_mean": v_pred,
+        }
+        return state, ema_params, metrics, rng
+
+    return train_step
+
+
+def make_train_step_anti(anti_layer, anti_weight, anti_delta):
+    anti_layer = int(anti_layer)
+    anti_weight = jnp.float32(anti_weight)
+    anti_delta = jnp.float32(anti_delta)
+
+    def train_step(state, ema_params, batch, rng, ema_decay):
+        """Vanilla SiT + anti-probe training step with a frozen final readout."""
+        x0, y = batch
+        local_batch = x0.shape[0]
+
+        rng, tau_rng, noise_rng, drop_rng = jax.random.split(rng, 4)
+
+        tau = jax.random.uniform(tau_rng, shape=(local_batch,), minval=0.0, maxval=1.0)
+        x1 = jax.random.normal(noise_rng, x0.shape)
+
+        x_tau = (1.0 - tau[:, None, None]) * x1 + tau[:, None, None] * x0
+        target = x0 - x1
+
+        def loss_fn(params):
+            pred, h_mid, c = state.apply_fn(
+                {"params": params},
+                x_tau,
+                timesteps=tau,
+                vector=y,
+                return_raw_features=anti_layer,
+                return_conditioning=True,
+                deterministic=False,
+                rngs={"dropout": drop_rng},
+            )
+            frozen_head_params = jax.lax.stop_gradient(params["FinalLayer_0"])
+            c_frozen = jax.lax.stop_gradient(c)
+            v_anti = state.apply_fn(
+                {"params": {"FinalLayer_0": frozen_head_params}},
+                h_mid,
+                c_frozen,
+                method=SelfFlowDiT.readout_from_hidden,
+            )
+            loss_fm = jnp.mean((pred - target) ** 2)
+            loss_anti_probe = mean_branchless_huber_loss(v_anti, target, anti_delta)
+            loss_total = loss_fm - anti_weight * loss_anti_probe
+            v_abs_mean = jnp.mean(jnp.abs(target))
+            v_pred_abs_mean = jnp.mean(jnp.abs(pred))
+            return loss_total, (loss_fm, loss_anti_probe, v_abs_mean, v_pred_abs_mean)
+
+        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+        (loss_total, (loss_fm, loss_anti_probe, v_abs, v_pred)), grads = grad_fn(state.params)
+
+        loss_total = jax.lax.pmean(loss_total, axis_name="batch")
+        loss_fm = jax.lax.pmean(loss_fm, axis_name="batch")
+        loss_anti_probe = jax.lax.pmean(loss_anti_probe, axis_name="batch")
+        v_abs = jax.lax.pmean(v_abs, axis_name="batch")
+        v_pred = jax.lax.pmean(v_pred, axis_name="batch")
+        grads = jax.lax.pmean(grads, axis_name="batch")
+
+        grad_norm = jnp.sqrt(sum(jnp.sum(jnp.square(x)) for x in jax.tree_util.tree_leaves(grads)))
+        param_norm = jnp.sqrt(sum(jnp.sum(jnp.square(x)) for x in jax.tree_util.tree_leaves(state.params)))
+
+        state = state.apply_gradients(grads=grads)
+        ema_params = ema_update(ema_params, state.params, ema_decay)
+
+        metrics = {
+            "train/loss": loss_total,
+            "train/loss_fm": loss_fm,
+            "train/loss_anti_probe": loss_anti_probe,
+            "train/loss_total": loss_total,
+            "train/ema_decay": ema_decay,
+            "train/grad_norm": grad_norm,
+            "train/param_norm": param_norm,
+            "train/v_abs_mean": v_abs,
+            "train/v_pred_abs_mean": v_pred,
+        }
+        return state, ema_params, metrics, rng
+
+    return train_step
+
+
+def make_eval_step_baseline():
+    def eval_step(state, ema_params, batch, rng):
+        """Vanilla SiT validation step (mirrors train_step; no grads; no EMA teacher)."""
+        del ema_params
+        x0, y = batch
+        local_batch = x0.shape[0]
+
+        rng, tau_rng, noise_rng = jax.random.split(rng, 3)
+
+        tau = jax.random.uniform(tau_rng, shape=(local_batch,), minval=0.0, maxval=1.0)
+        x1 = jax.random.normal(noise_rng, x0.shape)
+
+        x_tau = (1.0 - tau[:, None, None]) * x1 + tau[:, None, None] * x0
+        target = x0 - x1
+
         pred = state.apply_fn(
-            {"params": params},
+            {"params": state.params},
             x_tau,
             timesteps=tau,
             vector=y,
-            deterministic=False,
-            rngs={"dropout": drop_rng},
+            deterministic=True,
         )
-        loss = jnp.mean((pred - target) ** 2)
+        loss_fm = jnp.mean((pred - target) ** 2)
+        loss_total = loss_fm
+        loss_anti_probe = jnp.zeros((), dtype=loss_fm.dtype)
         v_abs_mean = jnp.mean(jnp.abs(target))
         v_pred_abs_mean = jnp.mean(jnp.abs(pred))
-        return loss, (v_abs_mean, v_pred_abs_mean)
 
-    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (loss, (v_abs, v_pred)), grads = grad_fn(state.params)
+        loss_total = jax.lax.pmean(loss_total, axis_name="batch")
+        loss_fm = jax.lax.pmean(loss_fm, axis_name="batch")
+        loss_anti_probe = jax.lax.pmean(loss_anti_probe, axis_name="batch")
+        v_abs_mean = jax.lax.pmean(v_abs_mean, axis_name="batch")
+        v_pred_abs_mean = jax.lax.pmean(v_pred_abs_mean, axis_name="batch")
 
-    loss = jax.lax.pmean(loss, axis_name="batch")
-    v_abs = jax.lax.pmean(v_abs, axis_name="batch")
-    v_pred = jax.lax.pmean(v_pred, axis_name="batch")
-    grads = jax.lax.pmean(grads, axis_name="batch")
+        metrics = {
+            "val/loss": loss_total,
+            "val/loss_fm": loss_fm,
+            "val/loss_anti_probe": loss_anti_probe,
+            "val/loss_total": loss_total,
+            "val/v_abs_mean": v_abs_mean,
+            "val/v_pred_abs_mean": v_pred_abs_mean,
+        }
+        return metrics, rng
 
-    grad_norm = jnp.sqrt(sum(jnp.sum(jnp.square(x)) for x in jax.tree_util.tree_leaves(grads)))
-    param_norm = jnp.sqrt(sum(jnp.sum(jnp.square(x)) for x in jax.tree_util.tree_leaves(state.params)))
-
-    state = state.apply_gradients(grads=grads)
-    ema_params = ema_update(ema_params, state.params, ema_decay)
-
-    metrics = {
-        "train/loss": loss,
-        "train/ema_decay": ema_decay,
-        "train/grad_norm": grad_norm,
-        "train/param_norm": param_norm,
-        "train/v_abs_mean": v_abs,
-        "train/v_pred_abs_mean": v_pred,
-    }
-    return state, ema_params, metrics, rng
+    return eval_step
 
 
-def eval_step(
-    state, ema_params, batch, rng,
-):
-    """Vanilla SiT validation step (mirrors train_step; no grads; no EMA teacher)."""
-    x0, y = batch
-    local_batch = x0.shape[0]
+def make_eval_step_anti(anti_layer, anti_weight, anti_delta):
+    anti_layer = int(anti_layer)
+    anti_weight = jnp.float32(anti_weight)
+    anti_delta = jnp.float32(anti_delta)
 
-    rng, tau_rng, noise_rng = jax.random.split(rng, 3)
+    def eval_step(state, ema_params, batch, rng):
+        """Vanilla SiT validation step with frozen anti-probe readout."""
+        del ema_params
+        x0, y = batch
+        local_batch = x0.shape[0]
 
-    tau = jax.random.uniform(tau_rng, shape=(local_batch,), minval=0.0, maxval=1.0)
-    x1 = jax.random.normal(noise_rng, x0.shape)
+        rng, tau_rng, noise_rng = jax.random.split(rng, 3)
 
-    x_tau = (1.0 - tau[:, None, None]) * x1 + tau[:, None, None] * x0
-    target = x0 - x1
+        tau = jax.random.uniform(tau_rng, shape=(local_batch,), minval=0.0, maxval=1.0)
+        x1 = jax.random.normal(noise_rng, x0.shape)
 
-    pred = state.apply_fn(
-        {"params": state.params},
-        x_tau,
-        timesteps=tau,
-        vector=y,
-        deterministic=True,
-    )
-    loss = jnp.mean((pred - target) ** 2)
-    v_abs_mean = jnp.mean(jnp.abs(target))
-    v_pred_abs_mean = jnp.mean(jnp.abs(pred))
+        x_tau = (1.0 - tau[:, None, None]) * x1 + tau[:, None, None] * x0
+        target = x0 - x1
 
-    loss = jax.lax.pmean(loss, axis_name="batch")
-    v_abs_mean = jax.lax.pmean(v_abs_mean, axis_name="batch")
-    v_pred_abs_mean = jax.lax.pmean(v_pred_abs_mean, axis_name="batch")
+        pred, h_mid, c = state.apply_fn(
+            {"params": state.params},
+            x_tau,
+            timesteps=tau,
+            vector=y,
+            return_raw_features=anti_layer,
+            return_conditioning=True,
+            deterministic=True,
+        )
+        frozen_head_params = jax.lax.stop_gradient(state.params["FinalLayer_0"])
+        c_frozen = jax.lax.stop_gradient(c)
+        v_anti = state.apply_fn(
+            {"params": {"FinalLayer_0": frozen_head_params}},
+            h_mid,
+            c_frozen,
+            method=SelfFlowDiT.readout_from_hidden,
+        )
+        loss_fm = jnp.mean((pred - target) ** 2)
+        loss_anti_probe = mean_branchless_huber_loss(v_anti, target, anti_delta)
+        loss_total = loss_fm - anti_weight * loss_anti_probe
+        v_abs_mean = jnp.mean(jnp.abs(target))
+        v_pred_abs_mean = jnp.mean(jnp.abs(pred))
 
-    metrics = {
-        "val/loss": loss,
-        "val/v_abs_mean": v_abs_mean,
-        "val/v_pred_abs_mean": v_pred_abs_mean,
-    }
-    return metrics, rng
+        loss_total = jax.lax.pmean(loss_total, axis_name="batch")
+        loss_fm = jax.lax.pmean(loss_fm, axis_name="batch")
+        loss_anti_probe = jax.lax.pmean(loss_anti_probe, axis_name="batch")
+        v_abs_mean = jax.lax.pmean(v_abs_mean, axis_name="batch")
+        v_pred_abs_mean = jax.lax.pmean(v_pred_abs_mean, axis_name="batch")
+
+        metrics = {
+            "val/loss": loss_total,
+            "val/loss_fm": loss_fm,
+            "val/loss_anti_probe": loss_anti_probe,
+            "val/loss_total": loss_total,
+            "val/v_abs_mean": v_abs_mean,
+            "val/v_pred_abs_mean": v_pred_abs_mean,
+        }
+        return metrics, rng
+
+    return eval_step
 
 
 def get_arrayrecord_dataloader(data_pattern, batch_size, is_training=True, seed=42):
@@ -1077,6 +1274,35 @@ def main():
     )
     parser.add_argument("--grad-clip", type=float, default=1.0,
                         help="Gradient clip max_norm (paper: 1.0)")
+    parser.add_argument(
+        "--anti-probe",
+        dest="anti_probe",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable a frozen-final-head anti-probe loss at one intermediate transformer block.",
+    )
+    parser.add_argument(
+        "--anti-probe-layer",
+        type=int,
+        default=None,
+        help=(
+            "1-based transformer block index used for the anti-probe readout. "
+            "For SiT-B, defaults to 5 when --anti-probe is enabled. "
+            "For other model sizes, pass this explicitly."
+        ),
+    )
+    parser.add_argument(
+        "--anti-probe-weight",
+        type=float,
+        default=0.1,
+        help="Coefficient lambda_anti for the anti-probe loss term.",
+    )
+    parser.add_argument(
+        "--anti-probe-delta",
+        type=float,
+        default=0.9,
+        help="Huber delta used by the anti-probe loss.",
+    )
     # ── VAE model (must match the variant used in prepare_data_tpu.py) ──────
     parser.add_argument(
         "--vae-model",
@@ -1249,6 +1475,7 @@ def main():
     # ── Model config ─────────────────────────────────────────────────────────
     config = build_model_config(args.model_size)
     depth = int(config["depth"])
+    anti_probe_cfg = resolve_anti_probe_config(args, depth)
 
     log_stage(
         f"Model=DiT-{args.model_size.upper()} hidden={config['hidden_size']} "
@@ -1257,6 +1484,13 @@ def main():
     log_stage(
         f"Vanilla SiT: ema_decay={args.ema_decay} grad_clip={args.grad_clip}"
     )
+    if anti_probe_cfg["enabled"]:
+        log_stage(
+            "Anti-probe enabled: "
+            f"layer={anti_probe_cfg['layer']} "
+            f"weight={anti_probe_cfg['weight']} "
+            f"delta={anti_probe_cfg['delta']}"
+        )
 
     # ── WandB ─────────────────────────────────────────────────────────────────
     if not args.no_wandb:
@@ -1295,8 +1529,21 @@ def main():
     accumulated_train_tflops = 0.0
 
     # ── Build pmapped training/eval steps ────────────────────────────────────
-    pmapped_train_step = jax.pmap(train_step, axis_name="batch")
-    pmapped_eval_step = jax.pmap(eval_step, axis_name="batch")
+    train_step_fn = make_train_step_baseline()
+    eval_step_fn = make_eval_step_baseline()
+    if anti_probe_cfg["enabled"]:
+        train_step_fn = make_train_step_anti(
+            anti_probe_cfg["layer"],
+            anti_probe_cfg["weight"],
+            anti_probe_cfg["delta"],
+        )
+        eval_step_fn = make_eval_step_anti(
+            anti_probe_cfg["layer"],
+            anti_probe_cfg["weight"],
+            anti_probe_cfg["delta"],
+        )
+    pmapped_train_step = jax.pmap(train_step_fn, axis_name="batch")
+    pmapped_eval_step = jax.pmap(eval_step_fn, axis_name="batch")
 
     # ── Sample function: num_steps and cfg_scale baked in at JIT time ─────────
     # TPU deviation: default 50 steps for fast monitoring; paper uses 250.
