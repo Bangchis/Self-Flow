@@ -21,7 +21,7 @@ Environment overrides:
   CLASS_MAIN_PROBE=convnext_tiny_probe
   CLASS_EPOCHS=50
   SEG_EPOCHS=25
-  PARALLEL_GPUS=0,1
+  PARALLEL_GPUS=0,1,2,3
   CLASS_EXTRACT_BATCH_SIZE=8 for linear-only, auto 2 when a CNN probe is enabled
   CLASS_CNN_LAYER_BATCH_SIZE=4 for linear-only, auto 1 when ConvNeXt-Tiny is enabled
   SEG_EXTRACT_BATCH_SIZE=<CLASS_EXTRACT_BATCH_SIZE>
@@ -64,7 +64,7 @@ CLASS_PROBES="${CLASS_PROBES:-convnext_tiny_probe}"
 CLASS_MAIN_PROBE="${CLASS_MAIN_PROBE:-convnext_tiny_probe}"
 CLASS_EPOCHS="${CLASS_EPOCHS:-50}"
 SEG_EPOCHS="${SEG_EPOCHS:-25}"
-PARALLEL_GPUS="${PARALLEL_GPUS:-0,1}"
+PARALLEL_GPUS="${PARALLEL_GPUS:-0,1,2,3}"
 if [[ -z "${CLASS_EXTRACT_BATCH_SIZE+x}" ]]; then
   if [[ ",$CLASS_PROBES," == *",resnet18_probe,"* || ",$CLASS_PROBES," == *",convnext_atto_probe,"* || ",$CLASS_PROBES," == *",convnext_tiny_probe,"* ]]; then
     CLASS_EXTRACT_BATCH_SIZE=2

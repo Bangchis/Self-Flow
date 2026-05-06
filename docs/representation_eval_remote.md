@@ -137,7 +137,7 @@ three checkpoints, one low-noise timestep `t=0.8`.
 cd /workspace/Self-Flow
 
 WANDB_WORKERS=1 \
-WANDB_RUN_NAME=rep_eval_3models_convnexttiny_defaultcka_seed123_t08_live \
+WANDB_RUN_NAME=rep_eval_3models_convnexttiny_probe_seed123_t08_4x5090_live \
 SEED=123 \
 EXPERIMENTS=classification,segmentation,cka \
 CHECKPOINTS=sit_xl_1m,layersync_800k,lara_400k \
@@ -151,15 +151,15 @@ SEG_TRAIN_BATCH_SIZE=256 \
 SEG_EVAL_BATCH_SIZE=128 \
 SEG_CNN_LAYER_BATCH_SIZE=1 \
 SEG_CNN_INPUT_SIZE=64 \
-CKA_BATCH_SIZE=8 \
-DINO_BATCH_SIZE=4 \
+CKA_BATCH_SIZE=16 \
+DINO_BATCH_SIZE=8 \
 CKA_MODEL_FEATURES=summary \
 CKA_DINO_FEATURES=cls \
 CKA_CONDITION_POLICIES=null \
 CKA_MAIN_SCENARIO=summary__null__dinov2_cls \
-PARALLEL_GPUS=0,1 \
-OUT_DIR=results/rep_eval_3models_convnexttiny_defaultcka_seed123_t08 \
-HF_PATH=rep_eval_3models_convnexttiny_defaultcka_seed123_t08 \
+PARALLEL_GPUS=0,1,2,3 \
+OUT_DIR=results/rep_eval_3models_convnexttiny_probe_seed123_t08_4x5090 \
+HF_PATH=rep_eval_3models_convnexttiny_probe_seed123_t08_4x5090 \
 scripts/run_rep_eval_3models.sh
 ```
 
@@ -168,7 +168,7 @@ For a detached run:
 ```bash
 setsid bash scripts/rerun_rep_eval_full_t08_shm.sh \
   >/tmp/rep_eval_convnexttiny_defaultcka.nohup 2>&1 < /dev/null &
-tail -f results/queued_runs/rep_eval_3models_convnexttiny_defaultcka_seed123_t08.log
+tail -f results/queued_runs/rep_eval_3models_convnexttiny_probe_seed123_t08_4x5090.log
 ```
 
 Override batch on a bigger machine:
