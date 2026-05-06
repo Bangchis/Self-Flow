@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+checkpoints/
+data/
+external/
+results/
+wandb/
+
+.cache/
+*.log
+*.npy
+*.npz
+*.pt
+*.pth
+*.msgpack

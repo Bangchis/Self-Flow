@@ -4,6 +4,9 @@ torchvision>=0.15.0
 diffusers>=0.25.0
 transformers>=4.30.0
 timm>=0.9.0
+jax[cuda13]>=0.10.0
+flax>=0.12.0
+optax>=0.2.6
 
 # Numerical and image processing
 numpy>=1.24.0
@@ -11,7 +14,11 @@ scipy>=1.10.0  # For ADM evaluator (FID calculation)
 Pillow>=9.0.0
 einops>=0.6.0
 tqdm>=4.65.0
+matplotlib>=3.7.0
+wandb>=0.16.0
+huggingface_hub>=0.23.0
+kaggle>=1.6.0
+kagglehub>=0.3.0
 
 # Evaluation dependencies
 tensorflow>=2.10.0  # For ADM evaluator
-
