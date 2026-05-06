@@ -32,10 +32,16 @@ hf_download() {
     echo "[setup] exists: $out"
     return
   fi
-  need_cmd huggingface-cli
   mkdir -p "$out"
   echo "[setup] downloading $repo -> $out"
-  huggingface-cli download "$repo" --local-dir "$out" --local-dir-use-symlinks False
+  if command -v hf >/dev/null 2>&1; then
+    hf download "$repo" --local-dir "$out"
+  elif command -v huggingface-cli >/dev/null 2>&1; then
+    huggingface-cli download "$repo" --local-dir "$out" --local-dir-use-symlinks False
+  else
+    echo "Missing Hugging Face CLI. Install/upgrade huggingface_hub, then run: hf auth login" >&2
+    exit 2
+  fi
 }
 
 if [[ "$DOWNLOAD_CHECKPOINTS" == "1" ]]; then
@@ -173,7 +179,7 @@ try:
 except Exception as exc:
     raise SystemExit(
         "Could not open Hugging Face dataset ILSVRC/imagenet-1k. "
-        "Log in with `huggingface-cli login` and accept the dataset terms at "
+        "Log in with `hf auth login` and accept the dataset terms at "
         "https://huggingface.co/datasets/ILSVRC/imagenet-1k first. "
         f"Original error: {exc}"
     )

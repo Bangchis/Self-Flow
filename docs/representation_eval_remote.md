@@ -49,7 +49,7 @@ variables or use each CLI login flow.
 
 ```bash
 wandb login
-huggingface-cli login
+hf auth login
 ```
 
 For Kaggle downloads, place `kaggle.json` at:
@@ -94,7 +94,7 @@ By default it downloads/checks:
 
 ImageNet is special because access is gated. Before running setup, open
 `https://huggingface.co/datasets/ILSVRC/imagenet-1k`, accept the terms, then run
-`huggingface-cli login`. The setup script streams only 4,000 validation images, so it does
+`hf auth login`. The setup script streams only 4,000 validation images, so it does
 not download full ImageNet.
 
 The old Kaggle full-competition fallback is still available, but usually unnecessary:
@@ -107,12 +107,12 @@ Manual checkpoint download equivalent:
 
 ```bash
 mkdir -p checkpoints external data
-huggingface-cli download LamTNguyen/sit-dit-xl-imagenet-step1038000 \
-  --local-dir checkpoints/SiT-XL-1M --local-dir-use-symlinks False
-huggingface-cli download LamTNguyen/Layersync-ckpt-jax \
-  --local-dir checkpoints/LayerSync-XL-800k --local-dir-use-symlinks False
-huggingface-cli download LamTNguyen/LARA-XL \
-  --local-dir checkpoints/LARA-XL --local-dir-use-symlinks False
+hf download LamTNguyen/sit-dit-xl-imagenet-step1038000 \
+  --local-dir checkpoints/SiT-XL-1M
+hf download LamTNguyen/Layersync-ckpt-jax \
+  --local-dir checkpoints/LayerSync-XL-800k
+hf download LamTNguyen/LARA-XL \
+  --local-dir checkpoints/LARA-XL
 ```
 
 DINOv2-g requires the local Meta DINOv2 repo and weights:
