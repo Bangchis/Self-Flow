@@ -152,6 +152,7 @@ count = int(os.environ.get("IMAGENET_4K_COUNT", "4000"))
 seed = int(os.environ.get("SEED", "123"))
 manifest = Path(os.environ["IMAGENET_MANIFEST"])
 out_root = Path("data/imagenet-val/subset_4000_256")
+repo_root = Path.cwd().resolve()
 
 if manifest.exists():
     existing = []
@@ -200,7 +201,7 @@ with open(manifest, "w") as handle:
         label_dir.mkdir(parents=True, exist_ok=True)
         path = label_dir / f"imagenet_val_hf_seed{seed}_{written:05d}.JPEG"
         image.save(path, format="JPEG", quality=95)
-        handle.write(f"{path.relative_to(Path.cwd())}\n")
+        handle.write(f"{path.resolve().relative_to(repo_root)}\n")
         written += 1
         if written % 250 == 0:
             print(f"[setup] ImageNet HF subset: {written}/{count}")
@@ -227,6 +228,7 @@ from pathlib import Path
 import os
 
 manifest = Path(os.environ["IMAGENET_MANIFEST"])
+repo_root = Path.cwd().resolve()
 roots = [Path(item) for item in os.environ["IMAGENET_SEARCH_ROOTS"].split(":") if item]
 images = []
 for root in roots:
@@ -245,7 +247,7 @@ else:
     with open(manifest, "w") as handle:
         for path in images[:4000]:
             try:
-                rel = path.relative_to(Path.cwd())
+                rel = path.resolve().relative_to(repo_root)
             except ValueError:
                 rel = path
             handle.write(f"{rel}\n")
