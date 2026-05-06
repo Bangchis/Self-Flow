@@ -173,6 +173,17 @@ Override batch on a bigger machine:
 CLASS_EXTRACT_BATCH_SIZE=8 SEG_EXTRACT_BATCH_SIZE=8 scripts/rerun_rep_eval_full_t09_shm.sh
 ```
 
+Use a small random subset for faster debug runs:
+
+```bash
+LIMIT_TINY_TRAIN=4000 \
+LIMIT_TINY_VAL=2000 \
+LIMIT_VOC_TRAIN=500 \
+LIMIT_VOC_VAL=500 \
+LIMIT_IMAGENET=4000 \
+scripts/rerun_rep_eval_full_t09_shm.sh
+```
+
 ## 6. Outputs
 
 The run writes CSVs, figures, and probe checkpoints under `OUT_DIR`, logs live worker runs

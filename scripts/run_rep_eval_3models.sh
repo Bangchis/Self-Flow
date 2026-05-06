@@ -37,6 +37,11 @@ Environment overrides:
   KEEP_FEATURE_CACHE=0
   KEEP_WORKER_OUTPUTS=0
   RESUME_WORKERS=0
+  LIMIT_TINY_TRAIN=
+  LIMIT_TINY_VAL=
+  LIMIT_VOC_TRAIN=
+  LIMIT_VOC_VAL=
+  LIMIT_IMAGENET=4000
 
 Examples:
   scripts/run_rep_eval_3models.sh
@@ -91,6 +96,11 @@ CKA_BATCH_SIZE="${CKA_BATCH_SIZE:-8}"
 DINO_BATCH_SIZE="${DINO_BATCH_SIZE:-4}"
 CKA_CONDITION_POLICIES="${CKA_CONDITION_POLICIES:-null}"
 CKA_MAIN_SCENARIO="${CKA_MAIN_SCENARIO:-summary__null__dinov2_cls}"
+LIMIT_TINY_TRAIN="${LIMIT_TINY_TRAIN:-}"
+LIMIT_TINY_VAL="${LIMIT_TINY_VAL:-}"
+LIMIT_VOC_TRAIN="${LIMIT_VOC_TRAIN:-}"
+LIMIT_VOC_VAL="${LIMIT_VOC_VAL:-}"
+LIMIT_IMAGENET="${LIMIT_IMAGENET:-}"
 EXTRA_ARGS=()
 if [[ "${KEEP_FEATURE_CACHE:-0}" == "1" ]]; then
   EXTRA_ARGS+=(--keep-feature-cache)
@@ -103,6 +113,21 @@ if [[ "${WANDB_WORKERS:-0}" == "1" ]]; then
 fi
 if [[ "${RESUME_WORKERS:-0}" == "1" ]]; then
   EXTRA_ARGS+=(--resume-workers)
+fi
+if [[ -n "$LIMIT_TINY_TRAIN" ]]; then
+  EXTRA_ARGS+=(--limit-tiny-train "$LIMIT_TINY_TRAIN")
+fi
+if [[ -n "$LIMIT_TINY_VAL" ]]; then
+  EXTRA_ARGS+=(--limit-tiny-val "$LIMIT_TINY_VAL")
+fi
+if [[ -n "$LIMIT_VOC_TRAIN" ]]; then
+  EXTRA_ARGS+=(--limit-voc-train "$LIMIT_VOC_TRAIN")
+fi
+if [[ -n "$LIMIT_VOC_VAL" ]]; then
+  EXTRA_ARGS+=(--limit-voc-val "$LIMIT_VOC_VAL")
+fi
+if [[ -n "$LIMIT_IMAGENET" ]]; then
+  EXTRA_ARGS+=(--limit-imagenet "$LIMIT_IMAGENET")
 fi
 
 CHECKPOINT_ARGS=()
