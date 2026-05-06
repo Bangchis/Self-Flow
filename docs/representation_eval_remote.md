@@ -38,9 +38,9 @@ pip install -U pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-If the machine uses a different CUDA/JAX stack, reinstall the matching JAX wheel after
-`requirements.txt`. For example, use `jax[cuda13]` on CUDA 13 hosts and `jax[cuda12]`
-on CUDA 12 hosts.
+If JAX sees GPUs but crashes on a simple matmul, reinstall the JAX CUDA wheel before
+running experiments. RTX 5090 machines are usually safer with CUDA 12 wheels or a JAX
+nightly CUDA 12 build than with CUDA 13 wheels unless the driver is new enough.
 
 ## 3. Login for Tracking and Downloads
 
