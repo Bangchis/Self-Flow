@@ -10,6 +10,7 @@ Run 3-model representation evaluation.
 Environment overrides:
   OUT_DIR=results/rep_eval_3models
   HF_PATH=rep_eval_3models
+  SHARED_CACHE_DIR=<OUT_DIR>/shared_cache
   SEED=123
   LAYERS=all
   TIMESTEPS=1.0
@@ -53,6 +54,7 @@ fi
 
 OUT_DIR="${OUT_DIR:-results/rep_eval_3models}"
 HF_PATH="${HF_PATH:-rep_eval_3models}"
+SHARED_CACHE_DIR="${SHARED_CACHE_DIR:-$OUT_DIR/shared_cache}"
 SEED="${SEED:-123}"
 LAYERS="${LAYERS:-all}"
 TIMESTEPS="${TIMESTEPS:-1.0}"
@@ -153,6 +155,7 @@ fi
   --timestep 1.0 \
   --timesteps "$TIMESTEPS" \
   --parallel-gpus "$PARALLEL_GPUS" \
+  --shared-cache-dir "$SHARED_CACHE_DIR" \
   --global-batch-size 256 \
   --class-epochs "$CLASS_EPOCHS" \
   --seg-epochs "$SEG_EPOCHS" \

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import fcntl
 import functools
 import hashlib
 import json
@@ -503,6 +504,10 @@ def upload_results_to_hf(
                 "**/*.features.npy",
                 "*.labels.npy",
                 "**/*.labels.npy",
+                "shared_cache",
+                "shared_cache/**",
+                "**/shared_cache",
+                "**/shared_cache/**",
             ]
         )
     ignore_patterns.extend(["_parallel_workers", "_parallel_workers/**", "**/_parallel_workers", "**/_parallel_workers/**"])
@@ -2598,57 +2603,71 @@ def extract_dino_features(
     target_grid: int | None = None,
 ) -> np.ndarray:
     dino_feature = dino_feature or args.dino_feature
-    cache_dir = Path(args.output_dir) / "feature_cache"
+    cache_root = Path(args.shared_cache_dir) if args.shared_cache_dir else Path(args.output_dir)
+    cache_dir = cache_root / "feature_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     effective_size = dino_effective_size(args.dino_input_size)
+    image_sig = cache_signature([str(example.image_path) for example in examples])
     sig = cache_signature(
-        ["dinov2g", dino_feature, str(target_grid or ""), str(len(examples)), str(args.dino_input_size), str(effective_size)]
+        [
+            "dinov2g",
+            dino_feature,
+            str(target_grid or ""),
+            str(len(examples)),
+            image_sig,
+            str(args.dino_input_size),
+            str(effective_size),
+        ]
     )
     feature_path = cache_dir / f"dinov2g_{dino_feature}_{sig}.features.npy"
-    if feature_path.exists() and not args.recompute_cache:
-        return np.load(feature_path, mmap_mode="r")
+    lock_path = cache_dir / f"{feature_path.name}.lock"
 
-    model, device = load_dinov2_g(args)
-    if effective_size != args.dino_input_size:
-        log(
-            f"DINOv2-g patch size is 14; center-cropping DINO inputs "
-            f"from {args.dino_input_size} to {effective_size}."
-        )
-    first = True
-    features = None
-    log(f"Extracting DINOv2-g features for {len(examples)} images")
-    total_batches = math.ceil(len(examples) / args.dino_batch_size)
-    progress_prefix = f"extract/dinov2g/{dino_feature}"
-    for batch_id, batch_indices in enumerate(progress(
-        batched_indices(len(examples), args.dino_batch_size, shuffle=False, seed=args.seed),
-        total=total_batches,
-        desc="cka dino",
-        unit="batch",
-    )):
-        batch = torch.stack([image_to_dino_tensor(examples[int(index)].image_path, args.dino_input_size) for index in batch_indices])
-        batch = batch.to(device, non_blocking=True)
-        with torch.inference_mode():
-            out = model.forward_features(batch)
-            feat = dino_features_from_output(out, dino_feature, target_grid)
-            feat_np = feat.float().cpu().numpy()
-        if first:
-            features = open_memmap(feature_path, mode="w+", dtype=np.float32, shape=(len(examples), *feat_np.shape[1:]))
-            first = False
-        features[batch_indices] = feat_np
-        wandb_log_progress(
-            progress_prefix,
-            min((batch_id + 1) * args.dino_batch_size, len(examples)),
-            len(examples),
-            batches=batch_id + 1,
-            total_batches=total_batches,
-        )
-    if features is None:
-        raise ValueError("No DINO features were extracted")
-    features.flush()
-    del model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return np.load(feature_path, mmap_mode="r")
+    with open(lock_path, "w") as lock_handle:
+        fcntl.flock(lock_handle, fcntl.LOCK_EX)
+        if feature_path.exists() and not args.recompute_cache:
+            return np.load(feature_path, mmap_mode="r")
+
+        model, device = load_dinov2_g(args)
+        if effective_size != args.dino_input_size:
+            log(
+                f"DINOv2-g patch size is 14; center-cropping DINO inputs "
+                f"from {args.dino_input_size} to {effective_size}."
+            )
+        first = True
+        features = None
+        log(f"Extracting DINOv2-g features for {len(examples)} images")
+        total_batches = math.ceil(len(examples) / args.dino_batch_size)
+        progress_prefix = f"extract/dinov2g/{dino_feature}"
+        for batch_id, batch_indices in enumerate(progress(
+            batched_indices(len(examples), args.dino_batch_size, shuffle=False, seed=args.seed),
+            total=total_batches,
+            desc="cka dino",
+            unit="batch",
+        )):
+            batch = torch.stack([image_to_dino_tensor(examples[int(index)].image_path, args.dino_input_size) for index in batch_indices])
+            batch = batch.to(device, non_blocking=True)
+            with torch.inference_mode():
+                out = model.forward_features(batch)
+                feat = dino_features_from_output(out, dino_feature, target_grid)
+                feat_np = feat.float().cpu().numpy()
+            if first:
+                features = open_memmap(feature_path, mode="w+", dtype=np.float32, shape=(len(examples), *feat_np.shape[1:]))
+                first = False
+            features[batch_indices] = feat_np
+            wandb_log_progress(
+                progress_prefix,
+                min((batch_id + 1) * args.dino_batch_size, len(examples)),
+                len(examples),
+                batches=batch_id + 1,
+                total_batches=total_batches,
+            )
+        if features is None:
+            raise ValueError("No DINO features were extracted")
+        features.flush()
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return np.load(feature_path, mmap_mode="r")
 
 
 def centered_linear_cka(x: np.ndarray, y: np.ndarray) -> float:
@@ -3389,6 +3408,7 @@ def parse_args() -> argparse.Namespace:
         help="Comma list for timestep sweep. Repo convention: 0=noise, 1=clean/least noisy.",
     )
     parser.add_argument("--output-dir", default="results/representation_eval")
+    parser.add_argument("--shared-cache-dir", default=None, help="Optional shared cache dir for reusable assets such as DINO features.")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--recompute-cache", action="store_true")
 
