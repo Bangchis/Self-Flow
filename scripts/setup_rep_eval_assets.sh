@@ -8,7 +8,10 @@ DOWNLOAD_VAE="${DOWNLOAD_VAE:-1}"
 DOWNLOAD_DINO="${DOWNLOAD_DINO:-1}"
 DOWNLOAD_TINY="${DOWNLOAD_TINY:-1}"
 DOWNLOAD_VOC="${DOWNLOAD_VOC:-1}"
+DOWNLOAD_IMAGENET_HF4K="${DOWNLOAD_IMAGENET_HF4K:-1}"
 DOWNLOAD_IMAGENET="${DOWNLOAD_IMAGENET:-0}"
+SEED="${SEED:-123}"
+IMAGENET_4K_COUNT="${IMAGENET_4K_COUNT:-4000}"
 
 TINY_ROOT="${TINY_ROOT:-data/tiny-imagenet/tiny-imagenet-200}"
 VOC_ROOT="${VOC_ROOT:-data/pascal-voc/VOCdevkit/VOC2012}"
@@ -127,6 +130,81 @@ if [[ "$DOWNLOAD_VOC" == "1" ]]; then
   else
     echo "[setup] exists: $VOC_ROOT"
   fi
+fi
+
+if [[ "$DOWNLOAD_IMAGENET_HF4K" == "1" ]]; then
+  echo "[setup] downloading 4k random ImageNet validation images from Hugging Face"
+  IMAGENET_MANIFEST="$IMAGENET_MANIFEST" IMAGENET_4K_COUNT="$IMAGENET_4K_COUNT" SEED="$SEED" python3 - <<'PY'
+from pathlib import Path
+import os
+
+from datasets import load_dataset
+from huggingface_hub import get_token
+from PIL import Image
+
+count = int(os.environ.get("IMAGENET_4K_COUNT", "4000"))
+seed = int(os.environ.get("SEED", "123"))
+manifest = Path(os.environ["IMAGENET_MANIFEST"])
+out_root = Path("data/imagenet-val/subset_4000_256")
+
+if manifest.exists():
+    existing = []
+    for raw in manifest.read_text().splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if path.exists():
+            existing.append(path)
+    if len(existing) >= count:
+        print(f"[setup] exists: {manifest} with {len(existing)} valid images")
+        raise SystemExit(0)
+
+token = get_token()
+try:
+    dataset = load_dataset(
+        "ILSVRC/imagenet-1k",
+        split="validation",
+        streaming=True,
+        token=token,
+    )
+except Exception as exc:
+    raise SystemExit(
+        "Could not open Hugging Face dataset ILSVRC/imagenet-1k. "
+        "Log in with `huggingface-cli login` and accept the dataset terms at "
+        "https://huggingface.co/datasets/ILSVRC/imagenet-1k first. "
+        f"Original error: {exc}"
+    )
+
+out_root.mkdir(parents=True, exist_ok=True)
+manifest.parent.mkdir(parents=True, exist_ok=True)
+dataset = dataset.shuffle(buffer_size=10000, seed=seed)
+
+written = 0
+with open(manifest, "w") as handle:
+    for example in dataset:
+        image = example["image"]
+        label = int(example.get("label", -1))
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+        image = image.convert("RGB").resize((256, 256), Image.Resampling.BICUBIC)
+        label_dir = out_root / str(label)
+        label_dir.mkdir(parents=True, exist_ok=True)
+        path = label_dir / f"imagenet_val_hf_seed{seed}_{written:05d}.JPEG"
+        image.save(path, format="JPEG", quality=95)
+        handle.write(f"{path.relative_to(Path.cwd())}\n")
+        written += 1
+        if written % 250 == 0:
+            print(f"[setup] ImageNet HF subset: {written}/{count}")
+        if written >= count:
+            break
+
+if written < count:
+    raise SystemExit(f"Only wrote {written}/{count} ImageNet images")
+print(f"[setup] wrote {manifest} with {written} ImageNet validation images")
+PY
 fi
 
 if [[ "$DOWNLOAD_IMAGENET" == "1" ]]; then

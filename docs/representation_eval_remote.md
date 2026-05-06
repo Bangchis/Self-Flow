@@ -90,10 +90,14 @@ By default it downloads/checks:
 - DINOv2-g code and weights.
 - Tiny ImageNet.
 - PASCAL VOC2012 train/val segmentation.
-- ImageNet 4k manifest if matching images already exist locally.
+- 4,000 random ImageNet validation images from Hugging Face `ILSVRC/imagenet-1k`.
 
-ImageNet is special because the Kaggle competition download can be very large and requires
-accepted terms. To let the script try the Kaggle competition download too, run:
+ImageNet is special because access is gated. Before running setup, open
+`https://huggingface.co/datasets/ILSVRC/imagenet-1k`, accept the terms, then run
+`huggingface-cli login`. The setup script streams only 4,000 validation images, so it does
+not download full ImageNet.
+
+The old Kaggle full-competition fallback is still available, but usually unnecessary:
 
 ```bash
 DOWNLOAD_IMAGENET=1 scripts/setup_rep_eval_assets.sh

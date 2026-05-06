@@ -17,6 +17,7 @@ tqdm>=4.65.0
 matplotlib>=3.7.0
 wandb>=0.16.0
 huggingface_hub>=0.23.0
+datasets>=2.18.0
 kaggle>=1.6.0
 kagglehub>=0.3.0
 
