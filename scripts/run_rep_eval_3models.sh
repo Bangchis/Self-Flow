@@ -46,7 +46,7 @@ Environment overrides:
 Examples:
   scripts/run_rep_eval_3models.sh
   EXPERIMENTS=cka LAYERS=1,7,14,21,28 scripts/run_rep_eval_3models.sh
-  CHECKPOINTS=layersync_800k TIMESTEPS=0.9 EXPERIMENTS=classification CLASS_PROBES=convnext_tiny_probe scripts/run_rep_eval_3models.sh
+  CHECKPOINTS=layersync_800k TIMESTEPS=0.8 EXPERIMENTS=classification CLASS_PROBES=convnext_tiny_probe scripts/run_rep_eval_3models.sh
 EOF
   exit 0
 fi

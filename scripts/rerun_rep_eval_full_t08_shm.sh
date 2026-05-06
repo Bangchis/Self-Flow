@@ -1,30 +1,22 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euxo pipefail
 
-cd /workspace/Self-Flow || exit 1
+cd /workspace/Self-Flow
 
-WAIT_PIDS=("$@")
-LOG_DIR=/workspace/Self-Flow/results/queued_runs
 RUN_TAG=rep_eval_3models_convnexttiny_defaultcka_seed123_t08
-QUEUE_LOG="$LOG_DIR/queued_${RUN_TAG}.log"
-mkdir -p "$LOG_DIR"
+LOG=/workspace/Self-Flow/results/queued_runs/${RUN_TAG}.log
+SHM_OUT=/dev/shm/${RUN_TAG}
+FINAL_OUT=/workspace/Self-Flow/results/${RUN_TAG}
 
-echo "[$(date -Is)] queued: waiting for current run PIDs: ${WAIT_PIDS[*]:-none}" >> "$QUEUE_LOG"
-while true; do
-  alive=0
-  for pid in "${WAIT_PIDS[@]}"; do
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      alive=1
-    fi
-  done
-  if [[ "$alive" == "0" ]]; then
-    break
-  fi
-  echo "[$(date -Is)] still waiting for current run to finish" >> "$QUEUE_LOG"
-  sleep 60
-done
+mkdir -p /workspace/Self-Flow/results/queued_runs
+: > "$LOG"
+exec >> "$LOG" 2>&1
 
-echo "[$(date -Is)] starting queued full eval" >> "$QUEUE_LOG"
+echo "[$(date -Is)] starting rerun on /dev/shm"
+rm -rf "$SHM_OUT"
+mkdir -p "$SHM_OUT"
+
+set +e
 WANDB_WORKERS=1 \
 WANDB_RUN_NAME=${RUN_TAG}_live \
 SEED=123 \
@@ -52,9 +44,16 @@ LIMIT_VOC_TRAIN=${LIMIT_VOC_TRAIN:-} \
 LIMIT_VOC_VAL=${LIMIT_VOC_VAL:-} \
 LIMIT_IMAGENET=${LIMIT_IMAGENET:-4000} \
 PARALLEL_GPUS=0,1 \
-OUT_DIR=results/${RUN_TAG} \
-HF_PATH=${RUN_TAG} \
-scripts/run_rep_eval_3models.sh >> "$QUEUE_LOG" 2>&1
+OUT_DIR="$SHM_OUT" \
+HF_PATH="$RUN_TAG" \
+scripts/run_rep_eval_3models.sh
 status=$?
-echo "[$(date -Is)] queued full eval finished with exit code $status" >> "$QUEUE_LOG"
+set -e
+echo "[$(date -Is)] run finished with exit code $status"
+if [[ "$status" == "0" ]]; then
+  rm -rf "$FINAL_OUT"
+  mkdir -p "$FINAL_OUT"
+  cp -a "$SHM_OUT"/. "$FINAL_OUT"/
+  echo "[$(date -Is)] copied final outputs to $FINAL_OUT"
+fi
 exit "$status"
