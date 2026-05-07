@@ -69,6 +69,12 @@ import shutil
 import kagglehub
 
 target = Path("checkpoints/vae/sdvae-ema-kaggle-flax")
+config_ok = (target / "config.json").exists()
+msgpack_ok = any((target / name).exists() for name in ("vae_params_bf16.msgpack", "diffusion_flax_model.msgpack", "flax_model.msgpack")) or bool(list(target.glob("*.msgpack")))
+if config_ok and msgpack_ok:
+    print(f"[setup] exists: {target}")
+    raise SystemExit(0)
+
 handles = [
     "damtrunghieu/sdvae-ema/flax/default/1",
     "damtrunghieu/sdvae-ema/Flax/default/1",
@@ -84,13 +90,24 @@ else:
     raise SystemExit(f"Could not download Kaggle VAE. Last error: {last_error}")
 
 target.mkdir(parents=True, exist_ok=True)
-for item in source.iterdir():
-    dst = target / item.name
-    if item.is_dir():
-        shutil.copytree(item, dst, dirs_exist_ok=True)
-    else:
-        shutil.copy2(item, dst)
+config_candidates = sorted(source.rglob("config.json"))
+msgpack_candidates = []
+for name in ("vae_params_bf16.msgpack", "diffusion_flax_model.msgpack", "flax_model.msgpack"):
+    msgpack_candidates.extend(sorted(source.rglob(name)))
+if not msgpack_candidates:
+    msgpack_candidates = sorted(source.rglob("*.msgpack"))
+
+if not config_candidates:
+    raise SystemExit(f"Kaggle VAE download has no config.json under {source}")
+if not msgpack_candidates:
+    raise SystemExit(f"Kaggle VAE download has no .msgpack params under {source}")
+
+shutil.copy2(config_candidates[0], target / "config.json")
+chosen_msgpack = msgpack_candidates[0]
+shutil.copy2(chosen_msgpack, target / chosen_msgpack.name)
 print(f"[setup] VAE source: {source}")
+print(f"[setup] VAE config: {config_candidates[0]}")
+print(f"[setup] VAE params: {chosen_msgpack}")
 PY
 fi
 
