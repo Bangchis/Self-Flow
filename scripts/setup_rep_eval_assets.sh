@@ -108,7 +108,24 @@ if not msgpack_candidates:
     msgpack_candidates = sorted(source.rglob("*.msgpack"))
 
 if not config_candidates:
-    raise SystemExit(f"Kaggle VAE download has no config.json under {source}")
+    try:
+        from huggingface_hub import hf_hub_download
+
+        config_path = hf_hub_download("stabilityai/sd-vae-ft-ema", "config.json")
+        config_candidates = [Path(config_path)]
+        print(f"[setup] Kaggle VAE has no config.json; using HF config: {config_path}")
+    except Exception as first_exc:
+        try:
+            from huggingface_hub import hf_hub_download
+
+            config_path = hf_hub_download("CompVis/stable-diffusion-v1-4", "vae/config.json")
+            config_candidates = [Path(config_path)]
+            print(f"[setup] Kaggle VAE has no config.json; using HF config: {config_path}")
+        except Exception as second_exc:
+            raise SystemExit(
+                f"Kaggle VAE download has no config.json under {source}; "
+                f"HF fallbacks also failed: {first_exc}; {second_exc}"
+            )
 if not msgpack_candidates:
     shown = "\n".join(str(path.relative_to(source)) for path in sorted(source.rglob("*")) if path.is_file())
     if shown:
