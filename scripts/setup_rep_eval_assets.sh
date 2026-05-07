@@ -64,6 +64,7 @@ if [[ "$DOWNLOAD_VAE" == "1" ]]; then
   mkdir -p checkpoints/vae/sdvae-ema-kaggle-flax
   python3 - <<'PY'
 from pathlib import Path
+import os
 import shutil
 
 import kagglehub
@@ -75,13 +76,18 @@ if config_ok and msgpack_ok:
     print(f"[setup] exists: {target}")
     raise SystemExit(0)
 
-handles = [
-    "damtrunghieu/sdvae-ema/flax/default/1",
+vae_handle = os.environ.get("KAGGLE_VAE_HANDLE", "damtrunghieu/sdvae-ema/Flax/default/1")
+handles = [vae_handle]
+for fallback in (
     "damtrunghieu/sdvae-ema/Flax/default/1",
-]
+    "damtrunghieu/sdvae-ema/flax/default/1",
+):
+    if fallback not in handles:
+        handles.append(fallback)
 last_error = None
 for handle in handles:
     try:
+        print(f"[setup] trying VAE handle: {handle}")
         source = Path(kagglehub.model_download(handle))
         break
     except Exception as exc:
