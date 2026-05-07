@@ -702,10 +702,18 @@ def load_flax_vae(path: Path) -> tuple[FlaxAutoencoderKL, dict]:
         if msgpacks:
             msgpack_path = msgpacks[0]
     if msgpack_path is None:
+        msgpacks = sorted(path.rglob("*.msgpack"))
+        if msgpacks:
+            msgpack_path = msgpacks[0]
+    if msgpack_path is None:
         raise FileNotFoundError(f"No Flax msgpack found in {path}")
     config_path = path / "config.json"
     if not config_path.exists():
-        raise FileNotFoundError(f"Missing VAE config.json in {path}")
+        configs = sorted(path.rglob("config.json"))
+        if configs:
+            config_path = configs[0]
+        else:
+            raise FileNotFoundError(f"Missing VAE config.json in {path}")
 
     vae = FlaxAutoencoderKL.from_config(str(config_path))
     with open(msgpack_path, "rb") as handle:
