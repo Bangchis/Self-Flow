@@ -85,10 +85,14 @@ for fallback in (
     if fallback not in handles:
         handles.append(fallback)
 last_error = None
+force_download = os.environ.get("KAGGLE_VAE_FORCE_DOWNLOAD", "1") != "0"
 for handle in handles:
     try:
-        print(f"[setup] trying VAE handle: {handle}")
-        source = Path(kagglehub.model_download(handle))
+        print(f"[setup] trying VAE handle: {handle} (force_download={force_download})")
+        try:
+            source = Path(kagglehub.model_download(handle, force_download=force_download))
+        except TypeError:
+            source = Path(kagglehub.model_download(handle))
         break
     except Exception as exc:
         last_error = exc
@@ -106,6 +110,9 @@ if not msgpack_candidates:
 if not config_candidates:
     raise SystemExit(f"Kaggle VAE download has no config.json under {source}")
 if not msgpack_candidates:
+    shown = "\n".join(str(path.relative_to(source)) for path in sorted(source.rglob("*")) if path.is_file())
+    if shown:
+        print(f"[setup] files found under Kaggle VAE source {source}:\n{shown}")
     raise SystemExit(f"Kaggle VAE download has no .msgpack params under {source}")
 
 shutil.copy2(config_candidates[0], target / "config.json")
